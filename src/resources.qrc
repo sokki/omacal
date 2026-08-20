@@ -1,0 +1,20 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="Main.qml">Main.qml</file>
+        <file alias="MonthView.qml">MonthView.qml</file>
+        <file alias="TimeGridView.qml">TimeGridView.qml</file>
+        <file alias="YearView.qml">YearView.qml</file>
+        <file alias="MiniMonth.qml">MiniMonth.qml</file>
+        <file alias="EventBar.qml">EventBar.qml</file>
+        <file alias="EventEditor.qml">EventEditor.qml</file>
+        <file alias="EditorCombo.qml">EditorCombo.qml</file>
+        <file alias="PillButton.qml">PillButton.qml</file>
+        <file alias="ScopeRow.qml">ScopeRow.qml</file>
+        <file alias="CustomRepeat.qml">CustomRepeat.qml</file>
+        <file alias="CalendarEditor.qml">CalendarEditor.qml</file>
+        <file alias="Calendar.js">Calendar.js</file>
+        <file alias="Recurrence.js">Recurrence.js</file>
+        <file alias="Style.qml">Style.qml</file>
+        <file alias="qmldir">qmldir</file>
+    </qresource>
+</RCC>

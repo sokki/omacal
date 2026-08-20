@@ -1,0 +1,447 @@
+#!/usr/bin/python3
+# Development helper: seeds evolution-data-server with a "Demo" provider
+# holding three calendars (Work, Family, Sports Club) and fills them with a
+# realistic, mostly busy schedule spanning one year around today.
+#
+#   bin/demo-data            create (or recreate) the demo calendars
+#   bin/demo-data --remove   remove them again
+#
+# Requires python-gobject and evolution-data-server.
+
+import os
+import random
+import shutil
+import sys
+import time
+import uuid
+from datetime import date, datetime, timedelta, timezone
+
+import gi
+
+gi.require_version("EDataServer", "1.2")
+gi.require_version("ECal", "2.0")
+gi.require_version("ICalGLib", "4.0")
+from gi.repository import ECal, EDataServer, ICalGLib  # noqa: E402
+
+PROVIDER_UID = "omacal-demo"
+CALENDARS = [
+    ("omacal-demo-work", "Work", "#4a90d9"),
+    ("omacal-demo-family", "Family", "#6bbd68"),
+    ("omacal-demo-sports", "Sports Club", "#e0843c"),
+    ("omacal-demo-birthdays", "Birthdays", "#c586c0"),
+]
+
+TODAY = date.today()
+RANGE_START = TODAY - timedelta(days=365)
+RANGE_END = TODAY + timedelta(days=365)
+
+random.seed(42)
+
+
+# ------------------------------------------------------------- iCal helpers
+
+def utc(day, hour, minute):
+    """Local wall-clock time on `day` as an iCal UTC timestamp."""
+    local = datetime(day.year, day.month, day.day, hour, minute).astimezone()
+    return local.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def esc(text):
+    """iCalendar TEXT escaping for values that may hold , ; or newlines."""
+    return (text.replace("\\", "\\\\").replace(";", "\\;")
+                .replace(",", "\\,").replace("\n", "\\n"))
+
+
+def vevent(summary, lines, alarm_minutes=None, description=None):
+    body = [
+        "BEGIN:VEVENT",
+        f"UID:{uuid.uuid4()}@omacal-demo",
+        f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+        f"SUMMARY:{esc(summary)}",
+        *lines,
+    ]
+    if description:
+        body.append(f"DESCRIPTION:{esc(description)}")
+    if alarm_minutes is not None:
+        body += [
+            "BEGIN:VALARM",
+            "ACTION:DISPLAY",
+            f"DESCRIPTION:{esc(summary)}",
+            f"TRIGGER:-PT{alarm_minutes}M",
+            "END:VALARM",
+        ]
+    body.append("END:VEVENT")
+    return "\r\n".join(body)
+
+
+def timed(summary, day, hour, minute, duration_minutes, location=None,
+          rrule=None, alarm_minutes=None, description=None):
+    start = datetime(day.year, day.month, day.day, hour, minute)
+    end = start + timedelta(minutes=duration_minutes)
+    lines = [f"DTSTART:{utc(day, hour, minute)}",
+             f"DTEND:{utc(end.date(), end.hour, end.minute)}"]
+    if location:
+        lines.append(f"LOCATION:{esc(location)}")
+    if rrule:
+        lines.append(f"RRULE:{rrule}")
+    return vevent(summary, lines, alarm_minutes, description)
+
+
+def all_day(summary, first_day, day_count=1, rrule=None, location=None,
+            description=None):
+    end = first_day + timedelta(days=day_count)
+    lines = [f"DTSTART;VALUE=DATE:{first_day.strftime('%Y%m%d')}",
+             f"DTEND;VALUE=DATE:{end.strftime('%Y%m%d')}"]
+    if location:
+        lines.append(f"LOCATION:{esc(location)}")
+    if rrule:
+        lines.append(f"RRULE:{rrule}")
+    return vevent(summary, lines, description=description)
+
+
+# A spread of note lengths, from a couple of words to a full agenda.
+NOTES = [
+    "Bring the good shoes.",
+    "Don't forget the insurance card.",
+    "Agenda: budget, staffing, and the Q3 roadmap. Dana presents the new "
+    "forecast; bring last month's numbers.",
+    "Preparation: read the design doc beforehand and collect open questions. "
+    "We want to leave with a decision on the storage layer, the migration "
+    "order, and who owns the rollout. If we have time left we'll also look "
+    "at the error budget for the last quarter.",
+    "Checklist:\n- passports\n- chargers\n- rain jackets\n- snacks for the "
+    "drive\n- the blue bag with the beach toys\n\nNeighbors water the plants; "
+    "key is with Mrs. Berger.",
+    "Discussed last time: the vendor contract renews in October, so any "
+    "change of plan has to be decided before the September board meeting. "
+    "Legal wants two weeks for review. Finance wants the comparison sheet "
+    "updated with the new usage numbers. Then there is the question of "
+    "training: if we switch, support needs at least one onboarding week "
+    "before the busy season starts.\n\nBring: laptop, contract folder, the "
+    "printed comparison sheet.",
+]
+
+# A really long one, for stress-testing the notes field.
+LONG_NOTE = (
+    "Full agenda and context, please read before the meeting.\n\n"
+    "1. Where we stand\n"
+    "The migration of the reporting stack stalled in July when the data "
+    "team lost two people to the platform reorg. Since then the nightly "
+    "exports have been running on the old pipeline with the known "
+    "duplicate-row issue, and the workaround script in cron has quietly "
+    "become load-bearing. Nobody is happy about this, least of all the "
+    "person who wrote the workaround.\n\n"
+    "2. What we need to decide\n"
+    "Either we finish the migration this quarter, which means borrowing "
+    "at least one engineer from the integrations team for six weeks, or "
+    "we formally defer it to Q2 and invest two days now in making the "
+    "workaround observable, so it fails loudly instead of silently. "
+    "Half-measures have cost us more than both options combined.\n\n"
+    "3. Numbers to have ready\n"
+    "- current nightly runtime (last 30 days trend)\n"
+    "- duplicate rate after the workaround\n"
+    "- support tickets traced back to stale reports\n"
+    "- the integrations team's actual committed capacity\n\n"
+    "4. Longer-term\n"
+    "If the event-driven architecture workshop produces a credible plan, "
+    "the migration target may change entirely. In that case finishing the "
+    "old migration is throwaway work and the deferral option becomes much "
+    "more attractive. Bring your honest opinion, not the one from the "
+    "steering slide deck.\n\n"
+    "Room has no projector — bring printouts or share to the TV via the "
+    "dongle that lives in the drawer under the whiteboard. Coffee machine "
+    "on that floor is broken again; plan accordingly."
+)
+
+
+def maybe_note(probability=0.3):
+    if random.random() >= probability:
+        return None
+    return LONG_NOTE if random.random() < 0.08 else random.choice(NOTES)
+
+
+def weekdays():
+    day = RANGE_START
+    while day <= RANGE_END:
+        if day.weekday() < 5:
+            yield day
+        day += timedelta(days=1)
+
+
+def every_n_days(n, offset=0):
+    day = RANGE_START + timedelta(days=offset)
+    while day <= RANGE_END:
+        yield day
+        day += timedelta(days=n)
+
+
+# --------------------------------------------------------- event generation
+
+def work_events():
+    events = [
+        timed("Standup", RANGE_START, 9, 15, 15,
+              rrule="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", alarm_minutes=5),
+        timed("Team meeting", RANGE_START, 11, 0, 60, location="Room Aurora",
+              rrule="FREQ=WEEKLY;BYDAY=TU", alarm_minutes=10),
+        timed("Sprint planning", RANGE_START, 10, 0, 90, location="Room Aurora",
+              rrule="FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"),
+        timed("1:1 with Dana", RANGE_START, 14, 0, 30,
+              rrule="FREQ=WEEKLY;BYDAY=TH", alarm_minutes=5),
+        timed("All hands", RANGE_START, 15, 0, 60, location="Canteen",
+              rrule="FREQ=MONTHLY;BYDAY=1FR"),
+        timed("Reporting stack: go/no-go", TODAY + timedelta(days=8), 10, 0, 90,
+              location="Room Cedar", alarm_minutes=15, description=LONG_NOTE),
+        timed("Reporting stack: prep reading", TODAY + timedelta(days=6), 16, 0, 60,
+              description=LONG_NOTE),
+        timed("Lunch & learn", RANGE_START, 12, 0, 45,
+              rrule="FREQ=MONTHLY;BYDAY=3WE"),
+    ]
+
+    # Titles from terse to sprawling, so every truncation path gets exercised.
+    meetings = [
+        ("Sync", None, 15), ("QBR", "Room Cedar", 90), ("1:1 Kim", None, 30),
+        ("Design review", "Room Birch", 60), ("Code review", None, 30),
+        ("Roadmap sync", "Room Aurora", 60), ("Customer call: Vantag GmbH", None, 45),
+        ("Customer call: Nordwind AG", None, 45), ("Interview: backend engineer", None, 60),
+        ("Architecture discussion", "Room Birch", 90), ("Budget review", "Room Cedar", 45),
+        ("Incident retro", None, 45), ("Hiring sync", None, 30),
+        ("Marketing check-in", None, 30), ("Support triage", None, 30),
+        ("Partner demo", "Room Aurora", 60), ("Quarterly planning", "Room Cedar", 120),
+        ("Quarterly business review with the northern region sales leadership team",
+         "Room Cedar", 120),
+        ("Workshop: migrating the billing pipeline to an event-driven architecture",
+         "Room Birch", 180),
+        ("Follow-up on the follow-up of the infrastructure cost review", None, 30),
+    ]
+    slots = [(8, 30), (10, 0), (10, 30), (13, 0), (13, 30), (14, 30),
+             (15, 0), (16, 0), (16, 30)]
+    for day in weekdays():
+        for _ in range(random.choice((1, 1, 2, 2, 3))):
+            title, location, minutes = random.choice(meetings)
+            hour, minute = random.choice(slots)
+            events.append(timed(title, day, hour, minute, minutes,
+                                location=location,
+                                alarm_minutes=random.choice((None, 5, 10)),
+                                description=maybe_note()))
+        if random.random() < 0.25:
+            events.append(timed("Focus block", day, random.choice((8, 13)), 0, 120))
+
+    for i, day in enumerate(every_n_days(42, offset=17)):
+        city = ["Berlin", "Hamburg", "München", "Zürich", "Wien"][i % 5]
+        trip_days = random.choice((2, 3))
+        events.append(all_day(f"Business trip {city}", day, day_count=trip_days,
+                              location=city, description=maybe_note(0.6)))
+        # Every other trip is a conference visit whose schedule overlaps it.
+        if i % 2 == 0:
+            events.append(all_day("Conference: InteropDays", day + timedelta(days=1),
+                                  day_count=3, location=city))
+            events.append(all_day("Booth duty", day + timedelta(days=2)))
+
+    for i, day in enumerate(every_n_days(30, offset=9)):
+        events.append(all_day(f"Release v{4 + i // 10}.{i % 10}", day))
+
+    # A team offsite bridging into a hackathon — more partial overlap.
+    events.append(all_day("Team offsite", TODAY + timedelta(days=31), day_count=3,
+                          location="Landhaus Seeblick",
+                          description="Rooms are booked under the company name. "
+                                      "Carpool list is on the wiki."))
+    events.append(all_day("Hackathon", TODAY + timedelta(days=33), day_count=2))
+
+    return events
+
+
+def family_events():
+    events = [
+        timed("Piano lesson Elli", RANGE_START, 15, 0, 45, location="Music school",
+              rrule="FREQ=WEEKLY;BYDAY=MO", alarm_minutes=30),
+        timed("Swimming lesson Toni", RANGE_START, 16, 30, 60, location="City pool",
+              rrule="FREQ=WEEKLY;BYDAY=WE", alarm_minutes=30),
+        timed("Groceries", RANGE_START, 10, 0, 60,
+              rrule="FREQ=WEEKLY;BYDAY=SA"),
+        timed("Lunch at grandparents", RANGE_START, 12, 30, 150,
+              rrule="FREQ=WEEKLY;BYDAY=SU"),
+        timed("Date night", RANGE_START, 19, 30, 180,
+              rrule="FREQ=MONTHLY;BYDAY=2SA", alarm_minutes=120),
+    ]
+
+    one_offs = [
+        ("Zahnarzt Elli", "Praxis Dr. Sommer", 60), ("Kinderarzt Toni", None, 45),
+        ("Elternabend", "School", 90), ("Playdate at Merle's", None, 150),
+        ("Car service", "Garage Huber", 90), ("Haircut", None, 45),
+        ("Vet", "Tierarzt Nord", 30), ("Furniture pickup", None, 90),
+        ("Parents' coffee", None, 90), ("School play", "School", 120),
+        ("Parent-teacher conference about Elli's progress in maths and German",
+         "School", 30),
+        ("Birthday party at the indoor playground (bring spare clothes!)",
+         None, 180),
+    ]
+    day = RANGE_START
+    while day <= RANGE_END:
+        if random.random() < 0.4:
+            title, location, minutes = random.choice(one_offs)
+            hour = random.choice((9, 10, 15, 16, 17))
+            events.append(timed(title, day, hour, random.choice((0, 30)), minutes,
+                                location=location, alarm_minutes=60,
+                                description=maybe_note(0.25)))
+        day += timedelta(days=random.choice((1, 2, 2, 3)))
+
+    # School breaks with trips and visits woven through them, so multi-day
+    # and single-day all-day events overlap in every combination.
+    events.append(all_day("Summer holidays", TODAY - timedelta(days=40), day_count=42))
+    events.append(all_day("Vacation: Denmark", TODAY - timedelta(days=33), day_count=8,
+                          location="Hvide Sande",
+                          description=NOTES[4]))
+    events.append(all_day("Zeltlager Toni", TODAY - timedelta(days=28), day_count=7,
+                          location="Jugendcamp Waldsee"))
+    events.append(all_day("Sommerfest", TODAY - timedelta(days=22)))
+    events.append(all_day("Oma & Opa zu Besuch", TODAY - timedelta(days=18),
+                          day_count=6))
+
+    events.append(all_day("Autumn break", TODAY + timedelta(days=64), day_count=14))
+    events.append(all_day("Week trip: Südtirol", TODAY + timedelta(days=66),
+                          day_count=8, location="Meran",
+                          description="Apartment check-in after 15:00. "
+                                      "Hiking boots for everyone!"))
+    events.append(all_day("Halloween party", TODAY + timedelta(days=72)))
+    events.append(all_day("Tante Mia zu Besuch", TODAY + timedelta(days=71),
+                          day_count=5))
+
+    events.append(all_day("Christmas break", TODAY + timedelta(days=127), day_count=14))
+    events.append(all_day("Visiting the in-laws", TODAY + timedelta(days=129),
+                          day_count=5))
+    events.append(all_day("Silvester", TODAY + timedelta(days=133)))
+    events.append(all_day("Ski weekend", TODAY + timedelta(days=133), day_count=3,
+                          location="Feldberg"))
+
+    events.append(all_day("Easter break", TODAY - timedelta(days=130), day_count=10))
+    events.append(all_day("Ostern bei Oma", TODAY - timedelta(days=127), day_count=4))
+    events.append(all_day("Ski trip", TODAY + timedelta(days=160), day_count=8,
+                          location="Zillertal"))
+    return events
+
+
+def birthday_events():
+    people = [
+        "Oma Christa", "Opa Heinz", "Mia", "Jonas", "Elli", "Toni",
+        "Lena", "Papa", "Mama", "Timo", "Karl", "Sofia", "Ben",
+        "Greta", "Paul", "Ida", "Finn", "Marta", "Ole", "Rike",
+        "Onkel Bernd aus Hannover", "Frau Berger (Nachbarin)",
+        "Max (Kindergarten)", "Dr. Sommer",
+    ]
+    events = []
+    for i, name in enumerate(people):
+        day = RANGE_START + timedelta(days=(i * 29 + 11) % 365)
+        events.append(all_day(f"{name}", day, rrule="FREQ=YEARLY",
+                              description=maybe_note(0.15)))
+    return events
+
+
+def sports_events():
+    events = [
+        timed("Training", RANGE_START, 19, 0, 90, location="Sports hall",
+              rrule="FREQ=WEEKLY;BYDAY=TU,TH", alarm_minutes=60),
+        timed("Club meeting", RANGE_START, 20, 0, 90, location="Clubhouse",
+              rrule="FREQ=MONTHLY;BYDAY=1MO"),
+    ]
+
+    teams = ["TSV Lindenberg", "FC Weiherbach", "SG Osterfeld", "SV Blauweiß",
+             "TuS Marienthal", "SC Falkenau"]
+    # A match every other Saturday, alternating home and away.
+    for i, day in enumerate(every_n_days(14, offset=(5 - RANGE_START.weekday()) % 7)):
+        team = teams[i % len(teams)]
+        home = i % 2 == 0
+        events.append(timed(f"League match vs {team}", day, 15, 0, 120,
+                            location="Sports hall" if home else f"Away at {team}",
+                            alarm_minutes=120))
+
+    events.append(all_day("Club tournament", TODAY + timedelta(days=46), day_count=2,
+                          location="Sports hall"))
+    events.append(all_day("Summer party", TODAY - timedelta(days=55),
+                          location="Clubhouse"))
+    events.append(timed("General assembly", TODAY + timedelta(days=98), 19, 30, 120,
+                        location="Clubhouse", alarm_minutes=1440))
+    events.append(timed("Referee course", TODAY + timedelta(days=25), 9, 0, 480,
+                        location="District center"))
+    return events
+
+
+# ----------------------------------------------------------------- plumbing
+
+def remove_demo(registry, wipe_data=False):
+    removed = False
+    for uid in [uid for uid, _, _ in CALENDARS] + [PROVIDER_UID]:
+        source = registry.ref_source(uid)
+        if source:
+            source.remove_sync(None)
+            print(f"removed {uid}")
+            removed = True
+        if wipe_data:
+            shutil.rmtree(
+                os.path.expanduser(f"~/.local/share/evolution/calendar/{uid}"),
+                ignore_errors=True)
+    return removed
+
+
+def create_sources(registry):
+    provider = EDataServer.Source.new_with_uid(PROVIDER_UID, None)
+    provider.set_display_name("Demo")
+    registry.commit_source_sync(provider, None)
+
+    for uid, name, color in CALENDARS:
+        source = EDataServer.Source.new_with_uid(uid, None)
+        source.set_display_name(name)
+        source.set_parent(PROVIDER_UID)
+        extension = source.get_extension(EDataServer.SOURCE_EXTENSION_CALENDAR)
+        extension.set_backend_name("local")
+        extension.set_color(color)
+        extension.set_selected(True)
+        registry.commit_source_sync(source, None)
+        print(f"created calendar {name} ({uid})")
+
+
+def fill_calendar(registry, uid, ical_events):
+    source = registry.ref_source(uid)
+    client = ECal.Client.connect_sync(source, ECal.ClientSourceType.EVENTS, 30, None)
+
+    # The local backend keeps its data directory across source removal, so a
+    # recreated uid inherits old events — purge before filling.
+    ok, existing = client.get_object_list_sync("#t", None)
+    stale = {component.get_uid() for component in existing} if ok else set()
+    for stale_uid in stale:
+        client.remove_object_sync(stale_uid, None, ECal.ObjModType.ALL,
+                                  ECal.OperationFlags.NONE, None)
+    if stale:
+        print(f"  purged {len(stale)} old events from {source.get_display_name()}")
+
+    components = [ICalGLib.Component.new_from_string(text) for text in ical_events]
+    for start in range(0, len(components), 100):
+        client.create_objects_sync(components[start:start + 100],
+                                   ECal.OperationFlags.NONE, None)
+    print(f"  {len(components)} events -> {source.get_display_name()}")
+
+
+def main():
+    registry = EDataServer.SourceRegistry.new_sync(None)
+
+    if "--remove" in sys.argv:
+        if not remove_demo(registry, wipe_data=True):
+            print("no demo calendars found")
+        return
+
+    # Recreate from scratch so reruns don't pile up duplicates.
+    if remove_demo(registry):
+        time.sleep(1.5)
+
+    create_sources(registry)
+    time.sleep(1.0)  # let the calendar factory pick the new sources up
+
+    for (uid, _, _), events in zip(
+            CALENDARS,
+            (work_events(), family_events(), sports_events(), birthday_events())):
+        fill_calendar(registry, uid, events)
+
+    print("done — remove again with: bin/demo-data --remove")
+
+
+if __name__ == "__main__":
+    main()

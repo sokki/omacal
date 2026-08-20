@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Capture the README screenshots on Hyprland.
+#
+# The window is put fullscreen at display scale 3 and grabbed unscaled, so a
+# 3840x2160 monitor yields native 3840x2160 PNGs with no resampling. The
+# display scale is restored on the way out, whatever happens.
+#
+#   bin/screenshots              all views
+#   bin/screenshots month week   only those
+#
+# Needs: hyprctl, grim, wtype, jq. Read .claude/skills/screenshots/SKILL.md
+# before changing any of this — several of the obvious approaches do not work
+# on current Hyprland, and one of them types into whatever window has focus.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+OUT="$ROOT/screenshots"
+APP="$ROOT/build/omacal"
+CAPTURE_SCALE=3
+
+for tool in hyprctl grim wtype jq; do
+    command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
+done
+[ -x "$APP" ] || { echo "build it first: bin/build" >&2; exit 1; }
+
+monitor=$(hyprctl monitors -j | jq -r '.[0]')
+name=$(jq -r .name <<<"$monitor")
+mode="$(jq -r '"\(.width)x\(.height)@\(.refreshRate)"' <<<"$monitor")"
+position="$(jq -r '"\(.x)x\(.y)"' <<<"$monitor")"
+scale=$(jq -r .scale <<<"$monitor")
+logical_w=$(jq -r '(.width / .scale) | floor' <<<"$monitor")
+logical_h=$(jq -r '(.height / .scale) | floor' <<<"$monitor")
+
+set_scale() {
+    # hyprctl keyword is refused by the Lua config parser; eval is the way in.
+    hyprctl eval "hl.monitor({ output = \"$name\", mode = \"$mode\", \
+position = \"$position\", scale = $1 })" >/dev/null 2>&1 || true
+}
+restore() {
+    set_scale "$scale"
+    sleep 1
+    echo "display scale restored to $scale"
+}
+trap restore EXIT
+
+focus() {
+    hyprctl dispatch 'hl.dsp.focus({ window = "class:omacal" })' >/dev/null 2>&1 || true
+    sleep 0.6
+}
+# Never send a keystroke unless the app really owns the keyboard: wtype types
+# into the focused window, which is otherwise the terminal running this.
+guard() {
+    [ "$(hyprctl activewindow -j | jq -r .class)" = "omacal" ] \
+        || { echo "omacal lost focus — aborting" >&2; exit 1; }
+}
+key() { guard; wtype -M ctrl -k "$1" -m ctrl; sleep 1.5; }
+plain_key() { guard; wtype -k "$1"; sleep 1.5; }
+shoot() {
+    sleep 1.5
+    grim -g "0,0 ${shot_w}x${shot_h}" "$OUT/$1.png"
+    echo "  $1.png $(file -b "$OUT/$1.png" | grep -oE '[0-9]+ x [0-9]+')"
+}
+
+mkdir -p "$OUT"
+set_scale "$CAPTURE_SCALE"
+sleep 2
+shot_w=$(hyprctl monitors -j | jq -r '(.[0].width / .[0].scale) | floor')
+shot_h=$(hyprctl monitors -j | jq -r '(.[0].height / .[0].scale) | floor')
+echo "capturing at ${shot_w}x${shot_h} logical (was ${logical_w}x${logical_h})"
+
+# A fresh instance so the captures do not inherit a half-scrolled view or a
+# leftover selection from a session in use.
+pkill -x omacal 2>/dev/null || true
+sleep 1
+"$APP" >/dev/null 2>&1 &
+sleep 8
+
+focus
+guard
+hyprctl dispatch 'hl.dsp.window.fullscreen()' >/dev/null 2>&1
+sleep 3
+
+wanted=("$@")
+[ ${#wanted[@]} -eq 0 ] && wanted=(month week day year event-editor)
+for shot in "${wanted[@]}"; do
+    case "$shot" in
+        month) key 3; shoot month ;;
+        week)  key 2; shoot week ;;
+        day)   key 1; shoot day ;;
+        year)  key 4; shoot year ;;
+        event-editor)
+            # Return creates at 09:00 on the focused day, which lands the
+            # popover in the busy part of the week rather than at midnight.
+            key 2; plain_key Return; shoot event-editor; plain_key Escape ;;
+        *) echo "unknown view: $shot" >&2 ;;
+    esac
+done
+
+focus
+guard
+hyprctl dispatch 'hl.dsp.window.fullscreen()' >/dev/null 2>&1

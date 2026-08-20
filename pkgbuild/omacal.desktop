@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Omacal
+GenericName=Calendar
+Comment=Calendar app on evolution-data-server
+Exec=omacal
+Icon=omacal
+Terminal=false
+Categories=Office;Calendar;
+Keywords=calendar;events;schedule;agenda;appointments;meetings;reminders;
+StartupWMClass=omacal

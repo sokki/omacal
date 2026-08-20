@@ -1,0 +1,26 @@
+# Maintainer: Omacal contributors
+pkgname=omacal
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Calendar app built with Qt Quick on evolution-data-server'
+arch=('x86_64')
+url='https://github.com/omacom-io/omacal'
+license=('MIT')
+install='omacal.install'
+depends=('qt6-base' 'qt6-declarative' 'evolution-data-server' 'xdg-desktop-portal')
+makedepends=('gcc' 'make' 'qt6-base' 'qt6-declarative')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  /usr/bin/install -Dm755 build/omacal "$pkgdir/usr/bin/omacal"
+  /usr/bin/install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  /usr/bin/install -Dm644 "$startdir/omacal.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omacal.svg"
+  /usr/bin/install -Dm644 "$startdir/omacal.desktop" "$pkgdir/usr/share/applications/omacal.desktop"
+}

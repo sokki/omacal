@@ -1,0 +1,47 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c2c2f"/>
+      <stop offset="1" stop-color="#161618"/>
+    </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF6156"/>
+      <stop offset="1" stop-color="#FF3B30"/>
+    </linearGradient>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7f4ee"/>
+      <stop offset="1" stop-color="#e6e1d7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App background -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+
+  <!-- Binder rings, passing behind the header band -->
+  <g fill="#8b8b93">
+    <rect x="168" y="96" width="28" height="64" rx="14"/>
+    <rect x="316" y="96" width="28" height="64" rx="14"/>
+  </g>
+
+  <!-- Calendar page -->
+  <rect x="96" y="136" width="320" height="272" rx="32" fill="url(#page)"/>
+
+  <!-- Header band: rounded at the top, square where the page continues -->
+  <rect x="96" y="136" width="320" height="76" rx="32" fill="url(#band)"/>
+  <rect x="96" y="180" width="320" height="32" fill="url(#band)"/>
+
+  <!-- The month: three weeks of days, with one date marked -->
+  <g fill="#c4bfb4">
+    <rect x="140" y="232" width="40" height="40" rx="12"/>
+    <rect x="204" y="232" width="40" height="40" rx="12"/>
+    <rect x="268" y="232" width="40" height="40" rx="12"/>
+    <rect x="332" y="232" width="40" height="40" rx="12"/>
+    <rect x="140" y="288" width="40" height="40" rx="12"/>
+    <rect x="268" y="288" width="40" height="40" rx="12"/>
+    <rect x="332" y="288" width="40" height="40" rx="12"/>
+    <rect x="140" y="344" width="40" height="40" rx="12"/>
+    <rect x="204" y="344" width="40" height="40" rx="12"/>
+    <rect x="268" y="344" width="40" height="40" rx="12"/>
+  </g>
+  <rect x="204" y="288" width="40" height="40" rx="12" fill="url(#band)"/>
+</svg>
